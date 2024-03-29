@@ -1,0 +1,55 @@
+from flask import Flask, render_template, request, redirect, session
+import bcrypt
+import pymysql.cursors
+
+app = Flask(__name__)
+app.secret_key = 'your-secret-key'
+
+# MySQL configuration
+db_config = {
+    'host': 'localhost',
+    'user': 'mysql',
+    'password': '5l@tf4TF',
+    'db': 'student',
+    'charset': 'utf8mb4',
+    'cursorclass': pymysql.cursors.DictCursor
+}
+
+# Route to serve login page
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        # Fetch username and password from form
+        username = request.form['username']
+        password = request.form['password']
+
+        # Connect to MySQL database
+        connection = pymysql.connect(**db_config)
+
+        try:
+            with connection.cursor() as cursor:
+                # Execute SQL query to retrieve user data
+                sql = "SELECT * FROM users WHERE username = %s"
+                cursor.execute(sql, (username,))
+                user = cursor.fetchone()
+
+                # Check if user exists and password is correct
+                if user and bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
+                    session['username'] = username
+                    return redirect('/index')
+                else:
+                    return "Invalid username or password"
+
+        finally:
+            connection.close()
+
+    return render_template('login.html')
+
+# Route to serve index page
+@app.route('/index')
+def index():
+    return render_template('index.html')
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0',debug=True)
+

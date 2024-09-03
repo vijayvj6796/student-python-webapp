@@ -1,0 +1,8 @@
+Flask==2.3.2
+bcrypt==4.0.1
+PyMySQL==1.1.0
+itsdangerous
+Flask-Mail
+python-dotenv
+cryptography
+

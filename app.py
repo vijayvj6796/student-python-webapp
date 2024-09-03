@@ -1,24 +1,54 @@
-from flask import Flask, render_template, request, redirect, session, jsonify
+from flask import Flask, render_template, request, redirect, session, jsonify, url_for
+from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer
 import bcrypt
 import pymysql.cursors
 import logging
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key'
+
+
+# Flask-Mail configuration
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('Support_Kodekloud','MAIL_USERNAME')
+# Initialize Flask-Mail
+mail = Mail(app)
+
+# Token serializer for generating and validating tokens
+serializer = URLSafeTimedSerializer(app.secret_key)
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# MySQL configuration
+# MySQL configuration using environment variables
 db_config = {
-    'host': 'localhost',
-    'user': 'mysql',
-    'password': 'PASSWORD',
-    'db': 'student',
+    'host': os.getenv('DB_HOST'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'db': os.getenv('DB_NAME'),
     'charset': 'utf8mb4',
     'cursorclass': pymysql.cursors.DictCursor
 }
+
+
+@app.route('/')
+def home():
+    return render_template('List.html')
+
+@app.route('/glow', methods=['GET', 'POST'])
+def glow():
+    return render_template('glow.html')
 
 # Route to serve login page
 @app.route('/login', methods=['GET', 'POST'])
@@ -72,6 +102,7 @@ def index():
 def signup():
     if request.method == 'POST':
         username = request.form['username']
+        email = request.form['email']
         password = request.form['password']
 
         # Hash the password
@@ -83,8 +114,8 @@ def signup():
         try:
             with connection.cursor() as cursor:
                 # Execute SQL query to insert new user
-                sql = "INSERT INTO users (username, password) VALUES (%s, %s)"
-                cursor.execute(sql, (username, hashed_password))
+                sql = "INSERT INTO users (username, password, email) VALUES (%s, %s, %s)"
+                cursor.execute(sql, (username, hashed_password, email))
                 connection.commit()
                 logger.info("User %s registered successfully", username)
                 return redirect('/login')
@@ -119,7 +150,7 @@ def register():
         try:
             with connection.cursor() as cursor:
                 # Execute SQL query to insert data into 'students' table
-                sql = "INSERT INTO student (name, class, roll_number, email, phone) VALUES (%s,%s, %s, %s, %s)"
+                sql = "INSERT INTO user_info (name, class, roll_number, email, phone) VALUES (%s,%s, %s, %s, %s)"
                 cursor.execute(sql, (name, student_class,  roll_number, email, phone))
                 connection.commit()
                 logger.info("Data inserted into 'students' table")
@@ -132,6 +163,82 @@ def register():
             connection.close()
 
     return redirect('/index')  # Redirect to index page after successful registration
+
+@app.route('/reset_password', methods=['GET', 'POST'])
+def reset_password():
+    if request.method == 'POST':
+        email = request.form['email']
+        
+        # Verify that the email exists in the database
+        connection = pymysql.connect(**db_config)
+        try:
+            with connection.cursor() as cursor:
+                sql = "SELECT * FROM users WHERE email = %s"
+                cursor.execute(sql, (email,))
+                user = cursor.fetchone()
+
+                if user:
+                    # Generate a secure token
+                    token = serializer.dumps(email, salt='password-reset-salt')
+                    
+                    # Create the password reset link
+                    reset_link = url_for('reset_password_token', token=token, _external=True)
+
+                    # Send the reset email
+                    msg = Message('Password Reset Request', recipients=[email])
+                    msg.body = f"To reset your password, click the following link: {reset_link}\n\nIf you did not request a password reset, please ignore this email."
+                    mail.send(msg)
+                    
+                    logger.info("Password reset link sent to %s", email)
+                    return "A password reset link has been sent to your email address."
+
+                else:
+                    logger.error("Password reset requested for non-existing email: %s", email)
+                    return "This email is not registered."
+
+        except Exception as e:
+            logger.error("Error during password reset request: %s", e)
+            return jsonify({'error': 'Internal Server Error'}), 500
+
+        finally:
+            connection.close()
+
+    return render_template('reset_password.html')
+
+@app.route('/reset_password/<token>', methods=['GET', 'POST'])
+def reset_password_token(token):
+    try:
+        # Validate the token (expires after 3600 seconds or 1 hour)
+        email = serializer.loads(token, salt='password-reset-salt', max_age=3600)
+    except Exception as e:
+        logger.error("Invalid or expired token: %s", e)
+        return "The reset link is invalid or has expired."
+
+    if request.method == 'POST':
+        # Get the new password from the form
+        new_password = request.form['password']
+        
+        # Hash the new password
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+
+        # Update the password in the database
+        connection = pymysql.connect(**db_config)
+        try:
+            with connection.cursor() as cursor:
+                sql = "UPDATE users SET password = %s WHERE email = %s"
+                cursor.execute(sql, (hashed_password, email))
+                connection.commit()
+                logger.info("Password updated successfully for %s", email)
+                return redirect('/login')
+
+        except Exception as e:
+            logger.error("Error updating password: %s", e)
+            return jsonify({'error': 'Internal Server Error'}), 500
+
+        finally:
+            connection.close()
+
+    return render_template('reset_password_form.html', token=token)
 
 
 # Route to logout
